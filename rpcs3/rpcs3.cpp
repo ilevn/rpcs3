@@ -1336,7 +1336,9 @@ int run_rpcs3(int argc, char** argv)
 
 		if (!spath.starts_with("%RPCS3_"))
 		{
-			spath = QFileInfo(::at32(args, 0)).absoluteFilePath().toStdString();
+			// The boot path may have been consumed from emu_argv after "--",
+			// leaving Qt's positional arguments empty (for example, on relaunch).
+			spath = QFileInfo(QString::fromStdString(spath)).absoluteFilePath().toStdString();
 		}
 
 		// Postpone startup to main event loop
