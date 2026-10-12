@@ -4,6 +4,7 @@
 #include "Utilities/date_time.h"
 #include "Emu/System.h"
 
+#include <atomic>
 #include <bit>
 
 AudioDumper::AudioDumper()

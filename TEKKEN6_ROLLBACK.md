@@ -24,6 +24,14 @@ The repositories are expected side by side:
    The linker finds `GGPO.lib` in `ggpo/build_rb/lib/x64/Release`.
 2. RPCS3 as described in `BUILDING.md` (`rpcs3.sln`, Release x64).
 
-The game and the PS3 firmware are not part of this repository.
+## Building and testing on Linux
+
+The experimental Linux port uses RPCS3 emulation and the ported GGPO library.
+See [the Linux tester guide](LINUX_TESTING.md) for native Arch/Fedora builds,
+source revisions, setup, logs, validation and known limitations.
+
+The optional ps3recomp-generated Windows native module is not supported on
+Linux. The RPCN launch profile does not require ps3recomp. The game, its update,
+and the PS3 firmware are not part of this repository.
 
 RPCS3 is licensed under GPLv2 (see `LICENSE`); the rollback changes are under the same license.

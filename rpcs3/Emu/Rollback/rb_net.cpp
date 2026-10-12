@@ -7,12 +7,20 @@
 
 // GGPO (local fork in tekken-rollback/ggpo, branch tekken-rollback: MAX_PREDICTION_FRAMES 3, 56 byte inputs),
 // built as a static library with the static CRT (ggpo/build_rb)
+#if __has_include("ggponet.h")
+#include "ggponet.h"
+#else
+// The Visual Studio solution retains its sibling-checkout layout.
 #include "../../../../ggpo/src/include/ggponet.h"
+#endif
+#ifdef _WIN32
 #pragma comment(lib, "GGPO.lib")
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "winmm.lib")
+#endif
 
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <string>
 #include <thread>
@@ -123,12 +131,12 @@ namespace rb::net
 			}
 		}
 
-		bool __cdecl cb_begin_game(const char*)
+		bool GGPO_CALL cb_begin_game(const char*)
 		{
 			return true;
 		}
 
-		bool __cdecl cb_save_game_state(unsigned char** buffer, int* len, int* checksum, int frame)
+		bool GGPO_CALL cb_save_game_state(unsigned char** buffer, int* len, int* checksum, int frame)
 		{
 			u32 seq[2]{};
 			get_seq(seq);
@@ -148,7 +156,7 @@ namespace rb::net
 			return true;
 		}
 
-		bool __cdecl cb_load_game_state(unsigned char* buffer, int)
+		bool GGPO_CALL cb_load_game_state(unsigned char* buffer, int)
 		{
 			const u64 game_frame = *reinterpret_cast<u64*>(buffer);
 			snapshot_info info{};
@@ -163,18 +171,18 @@ namespace rb::net
 			return true;
 		}
 
-		bool __cdecl cb_log_game_state(char*, unsigned char*, int)
+		bool GGPO_CALL cb_log_game_state(char*, unsigned char*, int)
 		{
 			return true;
 		}
 
-		void __cdecl cb_free_buffer(void* buffer)
+		void GGPO_CALL cb_free_buffer(void* buffer)
 		{
 			delete[] static_cast<u64*>(buffer);
 		}
 
 		// Re-simulation of one frame inside a rollback (called from ggpo_idle)
-		bool __cdecl cb_advance_frame(int)
+		bool GGPO_CALL cb_advance_frame(int)
 		{
 			sync_inputs();
 			state_net_set_resim(true);
@@ -186,7 +194,7 @@ namespace rb::net
 			return true;
 		}
 
-		bool __cdecl cb_on_event(GGPOEvent* ev)
+		bool GGPO_CALL cb_on_event(GGPOEvent* ev)
 		{
 			switch (ev->code)
 			{
@@ -242,7 +250,7 @@ namespace rb::net
 				else
 				{
 					player.type = GGPO_PLAYERTYPE_REMOTE;
-					strcpy_s(player.u.remote.ip_address, cfg.remote_ip.c_str());
+					std::snprintf(player.u.remote.ip_address, sizeof(player.u.remote.ip_address), "%s", cfg.remote_ip.c_str());
 					player.u.remote.port = cfg.remote_port;
 					ggpo_add_player(g_session, &player, &handle);
 					g_remote = handle;

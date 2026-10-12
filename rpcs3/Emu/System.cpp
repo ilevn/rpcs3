@@ -1073,8 +1073,13 @@ game_boot_result Emulator::BootGame(const std::string& path, const std::string& 
 	}
 
 	// Rollback: every boot of Tekken needs a fresh process (the rollback state is per process)
-	if (IsStopped() && rb::relaunch_for_boot(path))
+	if (IsStopped() && rb::relaunch_pending())
 	{
+		if (!rb::relaunch_for_boot(path))
+		{
+			sys_log.error("Rollback requires a fresh RPCS3 process; refusing to boot with stale rollback state");
+			return game_boot_result::generic_error;
+		}
 		CallFromMainThread([]() { Emu.Quit(true); });
 		return game_boot_result::no_errors;
 	}
@@ -4344,6 +4349,10 @@ game_boot_result Emulator::Restart(bool graceful, bool reset_path)
 			if (rb::relaunch_for_boot(path))
 			{
 				Emu.Quit(true);
+			}
+			else
+			{
+				sys_log.error("Rollback restart failed; restart RPCS3 manually before booting another game");
 			}
 		});
 

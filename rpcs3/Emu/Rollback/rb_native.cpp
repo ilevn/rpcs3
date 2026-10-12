@@ -9,6 +9,7 @@
 #include "Emu/Cell/lv2/sys_prx.h"
 #include "Emu/IdManager.h"
 #include "Utilities/File.h"
+#include "util/simd.hpp"
 
 #include <cstdlib>
 #include <vector>
@@ -95,7 +96,7 @@ namespace rb::native
 
 	inline __m128i reverse16(__m128i v)
 	{
-		return _mm_shuffle_epi8(v, _mm_setr_epi8(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0));
+		return gv_shuffle8(v, _mm_setr_epi8(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0));
 	}
 
 	void to_ctx(const ppu_thread& ppu, ppu_context& c)
@@ -284,6 +285,10 @@ namespace rb::native
 			rb_native_log.success("Native code %s loaded: %d lifted functions", path, n);
 			return n > 0;
 #else
+			if (const char* path = std::getenv("RB_NATIVE"); path && *path)
+			{
+				rb_native_log.warning("RB_NATIVE is unavailable on this platform; using RPCS3 emulation. The Windows native module requires a separate port.");
+			}
 			return false;
 #endif
 		}();

@@ -16,6 +16,23 @@ endif()
 add_library(3rdparty_dummy_lib INTERFACE)
 
 
+# The rollback fork needs its sibling GGPO port on every CMake platform.
+set(GGPO_SOURCE_DIR "${CMAKE_SOURCE_DIR}/../ggpo" CACHE PATH "GGPO rollback fork source checkout")
+if(NOT TARGET GGPO)
+    if(NOT EXISTS "${GGPO_SOURCE_DIR}/CMakeLists.txt")
+        message(FATAL_ERROR "GGPO source is missing. Set GGPO_SOURCE_DIR to the Linux-capable rollback fork.")
+    endif()
+    function(add_rollback_ggpo)
+        # Keep these SDK choices local; do not change RPCS3's dependency options.
+        set(GGPO_BUILD_SDK ON)
+        set(GGPO_BUILD_VECTORWAR OFF)
+        set(GGPO_BUILD_TESTS OFF)
+        set(BUILD_SHARED_LIBS OFF)
+        add_subdirectory("${GGPO_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/3rdparty/ggpo")
+    endfunction()
+    add_rollback_ggpo()
+endif()
+
 # ZLib
 add_subdirectory(zlib EXCLUDE_FROM_ALL)
 

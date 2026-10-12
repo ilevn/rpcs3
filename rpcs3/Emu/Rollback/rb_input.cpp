@@ -18,6 +18,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cerrno>
+#include <cstring>
+#include <ctime>
+#include <cinttypes>
 #include <deque>
 #include <map>
 #include <optional>
@@ -32,6 +36,11 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#elif defined(__linux__)
+#include <spawn.h>
+#include <unistd.h>
+
+extern char** environ;
 #endif
 
 LOG_CHANNEL(rb_log, "Rollback");
@@ -1916,7 +1925,7 @@ namespace rb
 		{
 			const char* v = std::getenv("RB_SLOW_FRAMES");
 			std::array<u64, 3> r{};
-			if (v && std::sscanf(v, "%llu:%llu:%llu", &r[0], &r[1], &r[2]) != 3) r = {};
+			if (v && std::sscanf(v, "%" SCNu64 ":%" SCNu64 ":%" SCNu64, &r[0], &r[1], &r[2]) != 3) r = {};
 			return r;
 		}();
 
@@ -1945,7 +1954,7 @@ namespace rb
 		// RB_SYNC_VBLANK=<Hz>: vblank rate from the sync point (measures how fast the fight can be simulated)
 		static const u32 sync_vblank = static_cast<u32>(std::strtoul(get_env("RB_SYNC_VBLANK").c_str(), nullptr, 10));
 
-		if (sync_vblank && g_cfg.video.vblank_rate != sync_vblank)
+		if (sync_vblank && static_cast<u32>(g_cfg.video.vblank_rate.get()) != sync_vblank)
 		{
 			g_cfg.video.vblank_rate.set(sync_vblank);
 			rb_log.success("Vblank rate set to %u Hz at game frame %u", sync_vblank, g_state.seq[0]);
@@ -2621,12 +2630,42 @@ namespace rb
 			return false;
 		}
 
+#elif defined(__linux__)
+		// Resolve the real executable rather than spawning /proc/self/exe as argv[0]:
+		// RPCS3 uses its executable directory to locate portable configuration.
+		std::vector<char> executable(256);
+		for (;;)
+		{
+			const ssize_t size = ::readlink("/proc/self/exe", executable.data(), executable.size());
+			if (size < 0)
+			{
+				if (errno == EINTR)
+				{
+					continue;
+				}
+				rb_log.error("Relaunch: executable path unknown (%s)", std::strerror(errno));
+				return false;
+			}
+			if (static_cast<usz>(size) < executable.size())
+			{
+				executable.resize(static_cast<usz>(size) + 1);
+				executable.back() = '\0';
+				break;
+			}
+			executable.resize(executable.size() * 2);
+		}
+#endif
+
 		// The new process overwrites RPCS3.log: this one's log is kept as RPCS3_prev_<time>.log (diagnostics of what happened before)
 		{
 			const std::string dir = fs::get_log_dir();
 			const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
 			std::tm tm{};
+#ifdef _WIN32
 			localtime_s(&tm, &now);
+#else
+			localtime_r(&now, &tm);
+#endif
 			const std::string copy = fmt::format("%sRPCS3_prev_%04d%02d%02d_%02d%02d%02d.log", dir, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
 
 			if (!fs::copy_file(dir + "RPCS3.log", copy, true))
@@ -2635,7 +2674,8 @@ namespace rb
 			}
 		}
 
-		// The environment (RB_* variables of hrat_online.bat) is inherited
+#ifdef _WIN32
+		// The environment (RB_* variables of the launcher) is inherited
 		std::wstring cmd = L"\"" + std::wstring(exe) + L"\" \"" + utf8_to_wchar(path) + L"\"";
 		STARTUPINFOW si{};
 		si.cb = sizeof(si);
@@ -2650,6 +2690,20 @@ namespace rb
 		CloseHandle(pi.hThread);
 		CloseHandle(pi.hProcess);
 		rb_log.success("Second boot in this process: started a fresh RPCS3 (pid %u) for '%s', quitting", pi.dwProcessId, path);
+		return true;
+#elif defined(__linux__)
+		// No shell parsing: spaces, quotes and metacharacters in the game path are literal.
+		// posix_spawn avoids running application code after fork in this multithreaded process.
+		char separator[] = "--";
+		char* const args[] = {executable.data(), separator, const_cast<char*>(path.c_str()), nullptr};
+		pid_t pid = 0;
+		const int error = ::posix_spawn(&pid, executable.data(), nullptr, nullptr, args, environ);
+		if (error != 0)
+		{
+			rb_log.error("Relaunch: posix_spawn failed (%s)", std::strerror(error));
+			return false;
+		}
+		rb_log.success("Second boot in this process: started a fresh RPCS3 (pid %u) for '%s', quitting", static_cast<u32>(pid), path);
 		return true;
 #else
 		rb_log.error("Second boot in this process: restart RPCS3 before playing again");

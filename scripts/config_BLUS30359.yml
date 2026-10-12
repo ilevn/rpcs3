@@ -1,0 +1,32 @@
+Core:
+  PPU Decoder: Recompiler (LLVM)
+  SPU Decoder: Recompiler (LLVM)
+  Use LLVM CPU: haswell
+  Use Accurate DFMA: true
+  Set DAZ and FTZ: false
+  SPU XFloat Accuracy: Approximate
+  PPU Accurate Non-Java Mode: false
+  PPU Vector NaN Handling: true
+  PPU Accurate Vector NaN Values: false
+  PPU Set Saturation Bit: false
+  PPU Set FPCC Bits: false
+  PPU Threads: 2
+  SPU Block Size: Safe
+  Max SPURS Threads: 6
+  Preferred SPU Threads: 0
+  Accurate SPU DMA: false
+  Accurate SPU Reservations: true
+  Accurate Cache Line Stores: false
+  Accurate PPU 128-byte Reservation Op Max Length: 0
+  Accurate RSX reservation access: false
+  SPU loop detection: true
+  SPU GETLLAR Busy Waiting Percentage: 0
+  SPU Reservation Busy Waiting Enabled: false
+  Clocks scale: 100
+  Sleep Timers Accuracy: Usleep Only
+  Thread Scheduler Mode: Operating System
+  HLE lwmutex: false
+  LLVM Precompilation: true
+Net:
+  Internet enabled: Connected
+  PSN status: RPCN

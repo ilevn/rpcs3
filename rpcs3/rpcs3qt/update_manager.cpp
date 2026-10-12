@@ -60,6 +60,19 @@ update_manager::update_manager(QObject* parent, std::shared_ptr<gui_settings> gu
 
 void update_manager::check_for_updates(bool automatic, bool check_only, bool auto_accept, QWidget* parent)
 {
+#ifdef __linux__
+	// Official updates would replace this fork and remove its rollback changes.
+	update_log.notice("Official updater disabled for the Linux Tekken 6 rollback fork");
+	Q_EMIT signal_update_available(false);
+	if (!automatic)
+	{
+		QMessageBox::information(parent, tr("Tekken 6 rollback updates"),
+			tr("This experimental build is updated from source.\n"
+			   "Get matching releases from https://github.com/ilevn/rpcs3.\n"
+			   "The official RPCS3 updater would remove the rollback changes."));
+	}
+	return;
+#endif
 	update_log.notice("Checking for updates: automatic=%d, check_only=%d, auto_accept=%d", automatic, check_only, auto_accept);
 
 	m_update_info = {};

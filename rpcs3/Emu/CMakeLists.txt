@@ -298,6 +298,7 @@ target_sources(rpcs3_emu PRIVATE
     Rollback/rb_input.cpp
     Rollback/rb_checksum.cpp
     Rollback/rb_state.cpp
+    Rollback/rb_native.cpp
     Rollback/rb_net.cpp
     Rollback/rb_online.cpp
     Cell/Modules/cellPamf.cpp
@@ -690,6 +691,7 @@ find_package(Threads REQUIRED)
 
 target_link_libraries(rpcs3_emu
     PUBLIC
+        GGPO
         3rdparty::llvm
         3rdparty::asmjit
         3rdparty::ffmpeg

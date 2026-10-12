@@ -1,3 +1,14 @@
+# Tekken 6 rollback — experimental Linux port
+
+Start with the **[Linux build and tester guide](LINUX_TESTING.md)**.
+This fork adds Linux support to [Ekspym's rollback fork](https://github.com/Ekspym/rpcs3).
+The matching [GGPO fork](https://github.com/ilevn/ggpo) is pinned in
+`scripts/ggpo-revision`. This is an experimental source release, not an official
+RPCS3 build. Practice mode has been tested; real online determinism and
+Windows/Linux interoperability have not yet been established.
+
+---
+
 RPCS3
 =====
 
