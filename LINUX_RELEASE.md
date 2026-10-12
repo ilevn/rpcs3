@@ -7,7 +7,7 @@ not an AppImage or other binary. Firmware and game/update files are not included
 ## Source identity
 
 - RPCS3: the `linux-test-1` tag in `ilevn/rpcs3`.
-- GGPO: `5a2880560952540e8bba9e6fcf9f916a03fd9a44` in `ilevn/ggpo`.
+- GGPO: `58bb4583881b387fec3136496a226012b391a79c` in `ilevn/ggpo`.
 - RPCS3 upstream base: `084b1c53c472292966fa7bd68ab0b253e07c9d13`.
 - GGPO upstream base: `2fc5dbb` from Ekspym's `tekken6-rollback` branch.
 
