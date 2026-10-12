@@ -104,7 +104,7 @@ namespace rb::online
 			return cfg;
 		}
 
-		u32 manager()
+		u32 input_manager()
 		{
 			const u32 mgr = vm::read32(mgr_pointer);
 
@@ -114,6 +114,20 @@ namespace rb::online
 			}
 
 			return mgr;
+		}
+
+		u32 remote_player(u32 mgr)
+		{
+			const u32 local = vm::read32(mgr + 0x14);
+			// The game's store-input routine accepts both streams when there is no
+			// local fighter. Such a spectator has no single remote player to predict.
+			return local == 1 ? 2 : local == 2 ? 1 : 0;
+		}
+
+		u32 manager()
+		{
+			const u32 mgr = input_manager();
+			return mgr && remote_player(mgr) ? mgr : 0;
 		}
 
 		// The input manager also runs the online character select (lockstep); prediction and rollback only in the fight itself
@@ -150,11 +164,6 @@ namespace rb::online
 
 		std::atomic<u64> g_fight_start_ns{0}; // steady clock when the fight markers became stable (0 = no fight)
 
-		u32 remote_player(u32 mgr)
-		{
-			return vm::read32(mgr + 0x14) == 1 ? 2 : 1;
-		}
-
 		using entry_t = std::array<u8, entry_size>;
 
 		std::map<u32, entry_t> g_predicted; // remote frames simulated with a predicted input
@@ -187,6 +196,45 @@ namespace rb::online
 
 		// Main loop frame (game frame) -> remote simulated frame at its start
 		std::map<u64, u32> g_sim_at;
+
+		void clear_prediction_state()
+		{
+			g_predicted.clear();
+			g_predicted_at.clear();
+			g_remote.clear();
+			g_remote_at.clear();
+			g_local.clear();
+			g_remote_last = 0;
+			g_mismatch_frame = umax;
+			g_sim_at.clear();
+			g_sync_hold = false;
+			g_sync_avg = 0;
+		}
+
+		void update_input_role(u32 mgr)
+		{
+			static u32 last_mgr = 0, last_local = umax;
+			const u32 local = mgr ? +vm::read32(mgr + 0x14) : umax;
+
+			if (mgr == last_mgr && local == last_local)
+			{
+				return;
+			}
+
+			// Lobby rotation can reuse the same input manager for a different role.
+			// Frame numbers alone do not identify the previous fighter's predictions.
+			clear_prediction_state();
+			last_mgr = mgr;
+			last_local = local;
+			g_fight_frames = 0;
+			g_fight_start_ns = 0;
+
+			if (mgr)
+			{
+				rb_online_log.notice("Online input role: manager 0x%08x, local %u, %s", mgr, local,
+					remote_player(mgr) ? "fighter (rollback)" : "spectator (confirmed inputs only)");
+			}
+		}
 
 		// RB_ONLINE_HASH_OUT=<csv>: hash of the fight state at the start of every simulated frame (both instances must
 		// write the same values; after a rollback the frame is written again, the last row counts)
@@ -668,6 +716,13 @@ namespace rb::online
 				}
 			}
 
+			// Spectators receive both fighters' inputs. Leave a missing entry missing:
+			// the fighter-only lead shortcut and prediction caches cannot fill it.
+			if (mode == 1 && !remote_player(mgr))
+			{
+				return 0;
+			}
+
 			// Lead 0 (no input delay, like offline): the net task (FUN_00422960, these two calls) sets the "ready" flag before
 			// the pad task adds the local input of this frame (FUN_00407c8c) and reads it (FUN_00185cc8). The local entry of
 			// frame sim is missing at that moment but added in the same frame: reported available. (Otherwise the fight steps
@@ -787,7 +842,7 @@ namespace rb::online
 			const u32 i = player - 1;
 			const u32 local = vm::read32(mgr + 0x14);
 
-			if (!((local - 1u) > 1 || (i < 2 && player != local)))
+			if (i >= 2 || !((local - 1u) > 1 || player != local))
 			{
 				return 0;
 			}
@@ -4153,6 +4208,11 @@ namespace rb::online
 	{
 
 		const config_t& cfg = config();
+		const u32 any_mgr = input_manager();
+		if (!is_resimulating())
+		{
+			update_input_role(any_mgr);
+		}
 		const u32 mgr = manager();
 
 		// First live boundary after a re-simulation of the stress ring path (rb_state loaded the state in frame_boundary
@@ -4296,6 +4356,19 @@ namespace rb::online
 
 		if (!mgr)
 		{
+			g_fight_start_ns = 0;
+			if (any_mgr && !is_resimulating())
+			{
+				// Both streams must progress on a spectator. Keep this visible even
+				// though fighter rollback/timing statistics no longer run here.
+				if (static u64 frames = 0; ++frames % 600 == 0)
+				{
+					rb_online_log.notice("Spectator inputs: local %u, simulated %u/%u, available %u/%u",
+						+vm::read32(any_mgr + 0x14), +vm::read32(any_mgr + 0x60), +vm::read32(any_mgr + 0x64),
+						+vm::read32(any_mgr + 0x58), +vm::read32(any_mgr + 0x5c));
+				}
+			}
+
 			if (stress_sound())
 			{
 				sound_exclusions();
@@ -4417,13 +4490,7 @@ namespace rb::online
 		if (sim_now + 30 < last_sim && sim_now < 10)
 		{
 			rb_online_log.notice("Online: simulated frames restarted (%u -> %u), prediction state cleared", last_sim, sim_now);
-			g_predicted.clear();
-			g_remote.clear();
-			g_remote_at.clear();
-			g_local.clear();
-			g_remote_last = 0;
-			g_mismatch_frame = umax;
-			g_sim_at.clear();
+			clear_prediction_state();
 		}
 
 		last_sim = sim_now;
