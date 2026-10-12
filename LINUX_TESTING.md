@@ -35,7 +35,7 @@ Qt 6.10.2 on Ubuntu 26.04. Record the actual versions used on each test system.
 Arch Linux (perform a complete system upgrade, not a partial upgrade):
 
 ```sh
-sudo pacman -Syu --needed base-devel git cmake ninja clang lld llvm python pkgconf \
+sudo pacman -Syu --needed base-devel git cmake ninja clang lld llvm python pkgconf abseil-cpp \
   qt6-base qt6-multimedia qt6-svg sdl3 ffmpeg opencv curl alsa-lib libpulse \
   openal libevdev systemd libxkbcommon-x11 zlib glew mesa vulkan-headers wayland \
   libxrandr libxinerama libxi libxcursor
@@ -45,7 +45,7 @@ Fedora 44:
 
 ```sh
 sudo dnf install git cmake ninja-build clang lld llvm-devel gcc-c++ make python3 \
-  pkgconf-pkg-config qt6-qtbase-devel qt6-qtbase-private-devel \
+  pkgconf-pkg-config abseil-cpp-devel qt6-qtbase-devel qt6-qtbase-private-devel \
   qt6-qtmultimedia-devel qt6-qtsvg-devel SDL3-devel ffmpeg-free-devel \
   opencv-devel libcurl-devel alsa-lib-devel pulseaudio-libs-devel \
   openal-soft-devel libevdev-devel systemd-devel libxkbcommon-x11-devel \
