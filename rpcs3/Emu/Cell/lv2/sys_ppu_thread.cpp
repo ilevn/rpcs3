@@ -100,7 +100,7 @@ void _sys_ppu_thread_exit(ppu_thread& ppu, u64 errorcode)
 		{
 			for (const auto& [b, e] : found->second)
 			{
-				rb::state_unexclude_async(b, e, "AT3P stream decoder thread ended");
+				rb::state_unexclude_async(b, e, "sound decoder thread ended");
 			}
 
 			g_rb_thread_ranges.erase(found);
@@ -628,6 +628,22 @@ error_code _sys_ppu_thread_create(ppu_thread& ppu, vm::ptr<u64> thread_id, vm::p
 
 		std::lock_guard lock(g_rb_thread_ranges_mutex);
 		g_rb_thread_ranges[tid] = std::move(ranges);
+	}
+
+	// The decoder server (BLUS30359 1.03, FUN_006b4180) also runs outside rollback.
+	// Its object contains the event queue at +0x18, callback data at +0x20/+0x24,
+	// and two event/callback slots at +0x2c..+0x38 (FUN_006b3f9c). Restoring this
+	// object while leaving its thread and queued SPU events live can pair a current
+	// completion with an old/null decoder pointer: FUN_006b43cc then reads 0x21c.
+	// Preserve the whole 0x40-byte object until its owning thread exits, just like
+	// the per-stream decoder objects above; adjacent game memory remains tracked.
+	if (ppu_name == "bnusCoreDecoderServerThread" && entry.addr == 0x006b4180 && entry.rtoc == 0x0096a8b0 &&
+		arg >= 0x10000 && arg <= 0xC0000000 - 0x40 && vm::check_addr(static_cast<u32>(arg), vm::page_readable, 0x40))
+	{
+		const u32 d = static_cast<u32>(arg);
+		rb::state_exclude_async(d, d + 0x40, "sound decoder server object");
+		std::lock_guard lock(g_rb_thread_ranges_mutex);
+		g_rb_thread_ranges[tid] = {{d, d + 0x40}};
 	}
 
 	ppu.check_state();
