@@ -42,6 +42,26 @@ PS3 data, firmware, or the complete emulator log.
 
 ## Bounds and interpretation
 
+### Voice-runtime experiment
+
+An experimental build can be launched with `bash scripts/play_audio_runtime.sh boot`.
+This enables `T6_AUDIO_VOICE_RUNTIME=keep` and the same automatic recorder. It
+prevents snapshot-ring restores from overwriting the first 0x150 bytes of a
+playing bnusCore voice **only** when its entire 0x2f0-byte record is saved and
+every non-runtime byte matches the live voice. Changed generations, requests,
+parameters, decoder pointers, partial snapshots and RSX-held pages disqualify
+the voice. Snapshot saving and other memory restores retain their normal behavior.
+
+This is an opt-in experiment, not a confirmed crackling fix. It does not preserve
+the separate mixer work buffers or fix rendering-memory stalls. Compare its
+captures with a launch using `T6_AUDIO_VOICE_RUNTIME=audit bash scripts/play_audio_capture.sh boot`,
+which measures qualifying voices without preserving them. Normal capture also
+audits by default. Neither mode needs the old `RB_SOUND_KEEP_RUNTIME` or
+`RB_SOUND_KEEP_PARAMS` options. Use the updated collector with the updated binary.
+An offline smoke test checks startup, not online audio correctness or desync safety.
+
+### Recording limits
+
 History is limited by time and a 64 MiB accounting budget. A normal marker keeps
 up to 20 seconds before and 10 after. High channel counts, unusually frequent
 events, startup, or shutdown may shorten that window; metadata records its bounds.
@@ -91,6 +111,8 @@ and collector; no wall-clock synchronization is needed.
 | mixer_decision | a=reason, b=active ports, c=untouched ports, d=emulated microseconds since last period |
 | rollback_rejected | a=requested/selected frame, b=current frame, c=1 no slot / 2 depth or tag limit / 3 not a past frame, d=1 |
 | ring_write | a=requested bytes, b=accepted bytes, c=bytes per output sample frame, d=ring bytes occupied after write |
+| voice_layout | a=live core address, b=voice count, c=fully saved voices, d=1 keep / 0 audit |
+| voice_restore | a=active fully saved voices, b=matching controls, c=matching voices with differing playback runtime, d=protected voices |
 | resim_end | a=ending frame, b=elapsed microseconds (0 when untracked) |
 | sound | a=simulation frame, b=bank, c=cue, d=0 live request/10 re-simulation request/1 reused/2 suppressed/3 success/4 failed |
 | sound (stop) | a=0, b=voice address, c=0, d=5 stop request |

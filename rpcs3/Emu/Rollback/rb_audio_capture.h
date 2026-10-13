@@ -18,7 +18,8 @@ namespace rb::audio_capture
 enum kind : std::uint32_t
 {
 	pcm = 1, marker, frame, restore_begin, restore_end, resim_end, sound,
-	backend_state, resim_begin, mixer_pcm, mixer_state, mixer_decision, rollback_rejected, ring_write
+	backend_state, resim_begin, mixer_pcm, mixer_state, mixer_decision, rollback_rejected, ring_write,
+	voice_layout, voice_restore
 };
 
 #ifdef __linux__

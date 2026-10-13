@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "rb_audio_capture.h"
+#include "rb_voice_runtime.h"
 #include "rb_state.h"
 
 #include "rb_input.h"
@@ -9,6 +10,7 @@
 #include "Emu/Cell/lv2/sys_timer.h"
 #include "Emu/Cell/lv2/sys_lwmutex.h"
 #include "Emu/IdManager.h"
+#include "Emu/System.h"
 #include "Emu/Memory/vm.h"
 #include "Emu/RSX/RSXThread.h"
 #include "Emu/RSX/Capture/rsx_capture.h"
@@ -1385,6 +1387,76 @@ namespace rb
 		// Load only: pages left as they are (RB_RSX_HOLD: the pages the RSX reads)
 		const std::unordered_map<u32, u64>* skip_pages = nullptr;
 
+		bool read_saved_voice(u32 slot, u32 begin, std::array<u8, voice_runtime::voice_size>& out) const
+		{
+			// A partially saved voice cannot establish matching controls. In
+			// particular, never read excluded/uninitialised bytes from a ring slot.
+			u32 done = 0;
+			while (done < out.size())
+			{
+				const u32 addr = begin + done, page = addr & ~0xfffu, off = addr & 0xfff;
+				const u32 size = std::min<u32>(out.size() - done, 0x1000 - off);
+				const auto found = index.find(page);
+				if (found == index.end() || (skip_pages && skip_pages->count(page))) return false;
+				const page_unit& unit = units[found->second];
+				u32 covered = off;
+				for (const auto& [part, length] : unit.pieces)
+				{
+					if (part > covered) break;
+					if (part + length > covered) covered = part + length;
+					if (covered >= off + size) break;
+				}
+				if (covered < off + size) return false;
+				std::memcpy(out.data() + done, unit.data + slot * 0x1000ull + off, size);
+				done += size;
+			}
+			return true;
+		}
+
+		std::vector<u8> inspect_audio_runtime(u32 slot, u32& core)
+		{
+			static const bool preserve = []
+			{
+				const char* v = std::getenv("T6_AUDIO_VOICE_RUNTIME");
+				return v && std::string_view(v) == "keep";
+			}();
+			core = 0;
+			if ((!preserve && !audio_capture::enabled()) || Emu.GetTitleID() != "BLUS30359") return {};
+
+			constexpr u32 global = 0x00D66D60;
+			if (!vm::check_addr(global, vm::page_readable, 0x100)) return {};
+			core = vm::read32(global + 0xc0);
+			const u32 n = vm::read32(global + 0x80);
+			std::vector<u8> keep;
+			u32 covered = 0, active = 0, matching = 0, rewound = 0, protected_count = 0;
+			if (core && n && n <= 0x400 && u64{core} + n * voice_runtime::voice_size <= 0x100000000ull &&
+				vm::check_addr(core, vm::page_readable | vm::page_writable, n * voice_runtime::voice_size))
+			{
+				keep.resize(n);
+				std::array<u8, voice_runtime::voice_size> saved;
+				for (u32 i = 0; i < n; ++i)
+				{
+					const u32 addr = core + i * voice_runtime::voice_size;
+					if (!read_saved_voice(slot, addr, saved)) continue;
+					++covered;
+					const u8* live = vm::get_super_ptr<u8>(addr);
+					if (live[0x1a0] && vm::read32(addr + 0x1ac)) ++active;
+					if (!voice_runtime::unchanged_active_voice(live, saved.data())) continue;
+					++matching;
+					if (std::memcmp(live, saved.data(), voice_runtime::runtime_size)) ++rewound;
+					if (preserve) keep[i] = 1, ++protected_count;
+				}
+			}
+			audio_capture::send_event(audio_capture::voice_layout, core, n, covered, preserve);
+			audio_capture::send_event(audio_capture::voice_restore, active, matching, rewound, protected_count);
+			if (static u64 loads = 0; ++loads % 600 == 1)
+			{
+				rb_log.notice("Audio runtime experiment (%s): core 0x%08x, %u voices, %u fully saved, %u active, %u matching controls, %u differing runtime, %u protected",
+					preserve ? "keep" : "audit", core, n, covered, active, matching, rewound, protected_count);
+			}
+			return keep;
+		}
+
 		template <bool Save>
 		void copy(u32 slot)
 		{
@@ -1410,6 +1482,9 @@ namespace rb
 
 			update_sync_exclusions();
 			refresh();
+			u32 audio_core = 0;
+			std::vector<u8> audio_keep;
+			if constexpr (!Save) audio_keep = inspect_audio_runtime(slot, audio_core);
 			const auto t1 = std::chrono::steady_clock::now();
 			g_pieces.clear();
 
@@ -1440,7 +1515,10 @@ namespace rb
 					}
 					else
 					{
-						g_pieces.push_back({guest + off, saved + off, size});
+						voice_runtime::restore_spans(u.page + off, size, audio_core, audio_keep, [&](u32 start, u32 length)
+						{
+							g_pieces.push_back({guest + off + start, saved + off + start, length});
+						});
 					}
 				}
 			}

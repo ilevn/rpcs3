@@ -21,6 +21,18 @@ REFERENCE_BAT = None
 
 
 class LauncherTests(unittest.TestCase):
+    @unittest.skipUnless(os.sys.platform == 'linux', 'Linux audio collector launcher')
+    def test_audio_runtime_launcher(self):
+        self.env.update(RB_SOUND_KEEP_RUNTIME='1', RB_SOUND_KEEP_PARAMS='1')
+        result = subprocess.run(['bash', str(ROOT / 'scripts/play_audio_runtime.sh'), 'boot'],
+                                env=self.env, text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        data = json.loads(self.capture.read_text())
+        self.check_profile(data)
+        self.assertEqual(data['env']['T6_AUDIO_VOICE_RUNTIME'], 'keep')
+        self.assertIn('T6_AUDIO_CAPTURE_SOCKET', data['env'])
+        self.assertEqual(data['args'], ['%RPCS3_GAMEID%:BLUS30359'])
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='rollback test ')
         self.addCleanup(self.tmp.cleanup)

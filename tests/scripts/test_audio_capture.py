@@ -21,6 +21,20 @@ def event(kind, stamp, seq=0, a=0, b=0, d=0, pcm=b'', sample_size=2):
             'c': sample_size, 'd': d, 'pcm': pcm}
 
 class CaptureTests(unittest.TestCase):
+    def test_voice_experiment_events(self):
+        rows = [c.decode(c.HEADER.pack(1, 15, 100, 0, 0x36000000, 192, 190, 1)),
+                c.decode(c.HEADER.pack(1, 16, 101, 1, 20, 12, 10, 12))]
+        with tempfile.TemporaryDirectory() as t:
+            path = Path(t) / 'capture.zip'
+            c.write_bundle(path, rows, {})
+            with zipfile.ZipFile(path) as z:
+                events = [json.loads(row) for row in z.read('events.jsonl').splitlines()]
+                self.assertEqual([row['event'] for row in events], ['voice_layout', 'voice_restore'])
+                summary = json.loads(z.read('capture.json'))['summary']
+                self.assertEqual(summary['voice_restore_events'], 1)
+                self.assertEqual(summary['voice_runtime_differences'], 10)
+                self.assertEqual(summary['voice_runtime_protections'], 12)
+
     def test_decode_rejects_bad_audio(self):
         self.assertIsNone(c.decode(b'bad'))
         self.assertIsNone(c.decode(c.HEADER.pack(1, 1, 0, 0, 48000, 0, 2, 0) + b'xx'))

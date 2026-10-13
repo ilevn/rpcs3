@@ -22,7 +22,8 @@ HEADER = struct.Struct('=II6Q')
 NAMES = {1: 'audio', 2: 'marker', 3: 'fight_frame', 4: 'restore_begin',
          5: 'restore_end', 6: 'resim_end', 7: 'sound', 8: 'backend_state', 9: 'resim_begin',
          10: 'mixer_audio', 11: 'mixer_state', 12: 'mixer_decision',
-         13: 'rollback_rejected', 14: 'ring_write'}
+         13: 'rollback_rejected', 14: 'ring_write',
+         15: 'voice_layout', 16: 'voice_restore'}
 PCM_STREAMS = {1: 'game-output', 10: 'mixer-input'}
 INACTIVE = (1 << 64) - 1
 MAX_MEMORY = 64 * 1024 * 1024
@@ -79,7 +80,10 @@ def write_bundle(path, records, metadata):
         'max_resim_us': max((r['b'] for r in records if r['kind'] == 6 and r['b']), default=None),
         'observed_rollback_counter_increase': sum(max(0, y['b'] - x['b']) for x, y in zip(fight, fight[1:])),
         'mixer_explicit_silence_blocks': sum(r['kind'] == 11 and bool(r['c'] & 1) for r in records),
-        'ring_rejected_bytes': sum(max(0, r['a'] - r['b']) for r in records if r['kind'] == 14)},
+        'ring_rejected_bytes': sum(max(0, r['a'] - r['b']) for r in records if r['kind'] == 14),
+        'voice_restore_events': sum(r['kind'] == 16 for r in records),
+        'voice_runtime_differences': sum(r['c'] for r in records if r['kind'] == 16),
+        'voice_runtime_protections': sum(r['d'] for r in records if r['kind'] == 16)},
         schema=2, clock='CLOCK_MONOTONIC microseconds',
                     missing_transport_sequences=(max(sequences) - min(sequences) + 1 - len(sequences)) if sequences else 0,
                     audio_files=len(groups), records=len(records),
@@ -236,6 +240,7 @@ def run(args):
     collector = Collector(output)
     binary = Path(env.get('RPCS3_EXE', '/nonexistent'))
     provenance = {'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest() if binary.is_file() else None,
+                  'requested_voice_runtime_mode': 'keep' if env.get('T6_AUDIO_VOICE_RUNTIME') == 'keep' else 'audit',
                   'started_utc': stamp, 'clock_origin_us': now_us(),
                   'capture_scope': 'RPCS3 cellAudio mixer and Cubeb output, before OS/device'}
     collector.context = provenance
