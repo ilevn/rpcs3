@@ -2,6 +2,7 @@
 #include "rb_input.h"
 #include "rb_state.h"
 #include "rb_checksum.h"
+#include "rb_spectator_diagnostics.h"
 
 #include "Emu/Cell/PPUThread.h"
 #include "Emu/Cell/SPUThread.h"
@@ -40,6 +41,7 @@ LOG_CHANNEL(rb_online_log, "Online");
 extern std::atomic<bool> g_rb_net_lag_active;
 
 extern bool ppu_form_branch_to_code(u32 entry, u32 target);
+extern bool ppu_form_branch_to_code(u32 entry, u32 target, bool link);
 
 // Rollback in the online mode of Tekken 6 (the game's own netcode over RPCN).
 //
@@ -403,6 +405,159 @@ namespace rb::online
 			return vm::read32(mgr + i * 0x10 + 0x3c) + frame % ring;
 		}
 
+		// Spectator diagnostics: bounded summaries, no guest writes or payload data.
+		bool spectator_diagnostics_enabled()
+		{
+			static const bool on = !(std::getenv("RB_SPECTATOR_DIAGNOSTICS") && *std::getenv("RB_SPECTATOR_DIAGNOSTICS") == '0');
+			return on;
+		}
+
+		struct spectator_trace
+		{
+			u32 mgr = 0, local = umax, mode = umax, net = 0;
+			u64 epoch = 0;
+			std::array<u32, 2> sim{}, available{};
+			std::array<spectator_diagnostics::stream, 2> streams{};
+			spectator_diagnostics::requests requests{};
+			spectator_diagnostics::stream batches{};
+			u32 batch_count = 0;
+			// Last 32 request/response ranges per report, in observation order.
+			struct transport_event { bool request; u32 first, count, tag; };
+			std::array<transport_event, 32> events{};
+			u64 event_count = 0;
+
+			void event(bool request, u32 first, u32 count, u32 tag)
+			{
+				events[event_count++ % events.size()] = {request, first, count, tag};
+			}
+			std::chrono::steady_clock::time_point report{}, progress{};
+			bool stalled = false;
+		};
+		std::mutex g_spectator_mutex;
+		spectator_trace g_spectator;
+
+		void spectator_report(const char* reason, u64 idle_ms)
+		{
+			const auto& d = g_spectator;
+			rb_online_log.notice("Spectator trace %s: epoch %llu local %u mode %u simulated %u/%u available %u/%u idle_ms %llu",
+				reason, d.epoch, d.local, d.mode, d.sim[0], d.sim[1], d.available[0], d.available[1], idle_ms);
+			for (u32 i = 0; i < 2; ++i)
+			{
+				const auto& s = d.streams[i];
+				rb_online_log.notice("Spectator store P%u: offered %llu accepted %llu duplicate %llu rejected %llu range %u..%u first/last %u/%u backwards %llu gaps %llu caller 0x%08x cleared_next %llu last_clear %u clear_caller 0x%08x cleared_pending %llu last_pending_clear %u",
+					i + 1, s.offered, s.accepted, s.duplicates, s.rejected, s.offered ? s.low : 0, s.high, s.first, s.last,
+					s.backwards, s.gaps, s.caller, s.cleared_next, s.last_clear, s.clear_caller, s.cleared_pending, s.last_pending_clear);
+			}
+			std::string ranges;
+			const u64 retained = std::min<u64>(d.event_count, d.events.size());
+			for (u64 n = d.event_count - retained; n < d.event_count; ++n)
+			{
+				const auto& e = d.events[n % d.events.size()];
+				fmt::append(ranges, " %s(start=%u,count=%u,tag=%u)", e.request ? "request" : "response", e.first, e.count, e.tag);
+			}
+			rb_online_log.notice("Spectator transport ranges: omitted %llu;%s (response tag=0 means unavailable)", d.event_count - retained, ranges);
+			const auto& b = d.batches;
+			rb_online_log.notice("Spectator response batches: received %llu start_range %u..%u last_start %u last_count %u backwards %llu (count <= 1 resets the request clock)",
+				b.offered, b.offered ? b.low : 0, b.high, b.last, d.batch_count, b.backwards);
+			const auto& r = d.requests;
+			rb_online_log.notice("Spectator requests: calls %llu repeated %llu last_start %u count %u tag_byte %u (send attempts, not delivery acknowledgments)",
+				r.calls, r.repeated, r.first, r.count, r.tag);
+		}
+
+		void spectator_store(u32 mgr, u32 i, u32 frame, u32 caller, bool present, bool stored, bool next_present)
+		{
+			if (!spectator_diagnostics_enabled() || vm::read32(mgr + 0x10) != 1 || remote_player(mgr)) return;
+			std::lock_guard lock(g_spectator_mutex);
+			// on_frame establishes the epoch before the game's input tasks run.
+			if (g_spectator.mgr == mgr)
+				g_spectator.streams[i].offer(frame, caller, present, stored, next_present,
+					frame + 1 >= vm::read32(mgr + 0x60 + i * 4) && frame + 1 < vm::read32(mgr + 0x58 + i * 4));
+		}
+
+		void spectator_net(ppu_thread& ppu, u32 mgr)
+		{
+			if (!spectator_diagnostics_enabled() || vm::read32(mgr + 0x10) != 1 || remote_player(mgr)) return;
+			if (ppu.lr != 0x004229a0 && ppu.lr != 0x004229b8) return;
+			const u32 net = static_cast<u32>(ppu.gpr[31]);
+			std::lock_guard lock(g_spectator_mutex);
+			if (g_spectator.mgr == mgr)
+				g_spectator.net = net && vm::check_addr(net, vm::page_readable, 0x9c) ? net : 0;
+		}
+
+		void spectator_tick(u32 mgr, std::chrono::steady_clock::time_point now)
+		{
+			if (!spectator_diagnostics_enabled()) return;
+			if (mgr && remote_player(mgr)) mgr = 0;
+			const u32 local = mgr ? +vm::read32(mgr + 0x14) : umax;
+			const u32 base = mgr ? +vm::read32(0x00967cf4) : 0;
+			const u32 mode = base && vm::check_addr(base, vm::page_readable, 0x10) ? +vm::read32(base + 0xc) : umax;
+			std::array<u32, 2> sim{}, available{};
+			if (mgr)
+			{
+				for (u32 i = 0; i < 2; ++i)
+				{
+					sim[i] = vm::read32(mgr + 0x60 + i * 4);
+					available[i] = vm::read32(mgr + 0x58 + i * 4);
+				}
+			}
+			std::lock_guard lock(g_spectator_mutex);
+			auto& d = g_spectator;
+			const bool reset = mgr != d.mgr || local != d.local || sim[0] < d.sim[0] || sim[1] < d.sim[1]
+				|| available[0] < d.available[0] || available[1] < d.available[1];
+			if (reset)
+			{
+				if (d.mgr) spectator_report("epoch-end", 0);
+				const u64 epoch = d.epoch + 1;
+				d = {};
+				d.epoch = epoch;
+				d.mgr = mgr;
+				d.local = local;
+				d.mode = mode;
+				d.report = d.progress = now;
+				if (mgr) rb_online_log.notice("Spectator epoch %llu: manager 0x%08x local %u mode %u sim %u/%u available %u/%u (role change or counter reset)",
+					epoch, mgr, local, mode, sim[0], sim[1], available[0], available[1]);
+			}
+			if (!mgr) return;
+			const bool transition = mode != d.mode;
+			if (sim != d.sim || transition)
+			{
+				if (d.stalled) spectator_report("progress-resumed", std::chrono::duration_cast<std::chrono::milliseconds>(now - d.progress).count());
+				d.progress = now;
+				d.stalled = false;
+			}
+			d.sim = sim;
+			d.available = available;
+			d.mode = mode;
+			const u64 idle_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - d.progress).count();
+			if (transition || now - d.report >= std::chrono::seconds(2))
+			{
+				d.stalled = idle_ms >= 1000;
+				spectator_report(transition ? "mode-change" : d.stalled ? "stalled" : "progress", idle_ms);
+				for (u32 i = 0; i < 2; ++i)
+				{
+					const u32 flags = vm::read32(mgr + i * 0x10 + 0x3c);
+					const bool mapped = flags && vm::check_addr(flags, vm::page_readable, ring);
+					u32 present_mask = 0;
+					if (mapped)
+						for (u32 k = 0; k < 32; ++k)
+							if (vm::read8(flags + (sim[i] + k) % ring) & 1) present_mask |= 1u << k;
+					rb_online_log.notice("Spectator ready P%u: next %u flags_mapped %u flags 0x%x next32_present 0x%08x ready_gate %u lead %u",
+						i + 1, sim[i], mapped ? 1u : 0u, mapped ? +vm::read8(flags + sim[i] % ring) : 0u,
+						present_mask, +vm::read32(mgr + 0xc), +vm::read32(mgr + 0x74));
+				}
+				if (d.net && vm::check_addr(d.net, vm::page_readable, 0x9c))
+				{
+					// Sampled before the task: pending may be set and cleared between samples.
+					rb_online_log.notice("Spectator recovery sample: net 0x%08x active %u pending %u response_wait %u input_wait %u request_clock %u tag_byte %u",
+						d.net, +vm::read32(d.net + 0x5c), +vm::read32(d.net + 0x68), +vm::read32(d.net + 0x70),
+						+vm::read32(d.net + 0x74), +vm::read32(d.net + 0x98), +vm::read8(d.net + 0x78));
+				}
+				d.streams = {};
+				d.event_count = 0;
+				d.report = now;
+			}
+		}
+
 		// Predicted remote entry of frame sim. FUN_00186a10 builds an entry from the pad object (FUN_00185620): +0x00 held,
 		// +0x04 pressed (held & ~held of the previous frame), +0x08 repeat (FUN_0018520c: set on the press, after 20 frames
 		// held, then every 4), the same three words for the mapped buttons at +0x0C/+0x10/+0x14 (FUN_0018542c), +0x18..+0x47
@@ -666,6 +821,7 @@ namespace rb::online
 		u32 hle_input_available(ppu_thread& ppu, u32 mgr, u32 player)
 		{
 			note_caller("available", ppu, mgr);
+			spectator_net(ppu, mgr);
 
 			// The battle net task object (FUN_00423364 -> FUN_00422960, which keeps it in r31 while it calls this function):
 			// send/receive state, message sequence numbers, input history rings (up to +0x10B4EC). Network state, not fight
@@ -998,6 +1154,7 @@ namespace rb::online
 
 			if (vm::read8(flags) & 1)
 			{
+				spectator_store(mgr, i, frame, static_cast<u32>(ppu.lr), true, false, false);
 				return 0;
 			}
 
@@ -1006,6 +1163,7 @@ namespace rb::online
 
 			if (!entries || frame % ring >= (end - entries) / entry_size)
 			{
+				spectator_store(mgr, i, frame, static_cast<u32>(ppu.lr), false, false, false);
 				return 0;
 			}
 
@@ -1015,6 +1173,7 @@ namespace rb::online
 			// The next frame's flags are reset for a fresh entry, but not when it holds a prediction already in use
 			if (player != remote_player(mgr) || !g_predicted.contains(next))
 			{
+				spectator_store(mgr, i, frame, static_cast<u32>(ppu.lr), false, true, (vm::read8(flag_addr(mgr, i, next)) & 1) != 0);
 				vm::write8(flag_addr(mgr, i, next), 0);
 			}
 
@@ -2987,6 +3146,49 @@ namespace rb::online
 	const u32 s_heap_alloc_handle1_index = REG_HIDDEN_FUNC(hle_heap_alloc_handle1);
 	const u32 s_heap_alloc_handle_index = REG_HIDDEN_FUNC(hle_heap_alloc_handle);
 	const u32 s_heap_alloc_raw_index = REG_HIDDEN_FUNC(hle_heap_alloc_raw);
+	// Observe only the spectator call sites. Forward every argument and the full
+	// return value to the original game function; do not retry or filter packets.
+	u64 hle_spectator_request(ppu_thread& ppu, u64 transport, u64 peer, u64 message)
+	{
+		const u32 msg = static_cast<u32>(message);
+		if (spectator_diagnostics_enabled() && vm::check_addr(msg, vm::page_readable, 0xd))
+		{
+			std::lock_guard lock(g_spectator_mutex);
+			if (g_spectator.mgr)
+			{
+				g_spectator.requests.sent(vm::read32(msg + 8), vm::read8(msg + 0xc), vm::read8(msg + 4));
+				g_spectator.event(true, vm::read32(msg + 8), vm::read8(msg + 0xc), vm::read8(msg + 4));
+			}
+		}
+		u64 result = 0;
+		side_heap::with_frame(ppu, [&](u32) { result = side_heap::call(ppu, 0x0040ef2c, {transport, peer, message}); });
+		return result;
+	}
+
+	u64 hle_spectator_receive(ppu_thread& ppu, u64 message)
+	{
+		// Called only after a type-9 receive succeeds. Its frame/count fields
+		// are populated by this decompressor, so observe them AFTER the call.
+		// The game ignores the return value; do not infer decode success from it.
+		u64 result = 0;
+		side_heap::with_frame(ppu, [&](u32) { result = side_heap::call(ppu, 0x0045e6f8, {message}); });
+		const u32 msg = static_cast<u32>(message);
+		if (spectator_diagnostics_enabled() && vm::check_addr(msg, vm::page_readable, 0x14))
+		{
+			std::lock_guard lock(g_spectator_mutex);
+			if (g_spectator.mgr)
+			{
+				g_spectator.batches.offer(vm::read32(msg + 0x10), 0x00421e74, false, true, false);
+				g_spectator.batch_count = vm::read8(msg + 0xc);
+				g_spectator.event(false, vm::read32(msg + 0x10), vm::read8(msg + 0xc), 0);
+			}
+		}
+		return result;
+	}
+
+	const u32 s_spectator_request_index = REG_HIDDEN_FUNC(hle_spectator_request);
+	const u32 s_spectator_receive_index = REG_HIDDEN_FUNC(hle_spectator_receive);
+
 	const u32 s_heap_free_raw_index = REG_HIDDEN_FUNC(hle_heap_free_raw);
 	const u32 s_heap_free_handle_index = REG_HIDDEN_FUNC(hle_heap_free_handle);
 	const u32 s_heap_destruct_index = REG_HIDDEN_FUNC(hle_heap_destruct);
@@ -3058,6 +3260,25 @@ namespace rb::online
 			}
 
 			return;
+		}
+
+		if (spectator_diagnostics_enabled())
+		{
+			// BLUS30359 v1.03: request-send and type-9 decompression calls. Guard the
+			// instructions and use linked branches so execution resumes at call+4.
+			for (const auto& hook : {std::array<u32, 3>{0x00423234, 0x4bfebcf9, s_spectator_request_index},
+				std::array<u32, 3>{0x00421e70, 0x4803c889, s_spectator_receive_index}})
+			{
+				const auto [addr, expected, index] = hook;
+				const u32 target = g_fxo->get<ppu_function_manager>().func_addr(index, true);
+				if (vm::check_addr(addr, vm::page_readable, 4) && vm::read32(addr) == expected && target
+					&& ppu_form_branch_to_code(addr, target, true))
+				{
+					applied.push_back(addr);
+					rb_online_log.notice("Spectator diagnostic call hook 0x%08x installed", addr);
+				}
+				else rb_online_log.warning("Spectator diagnostic call hook 0x%08x unavailable; request/response tracing incomplete", addr);
+			}
 		}
 
 		if (!g_press_scratch)
@@ -4212,6 +4433,7 @@ namespace rb::online
 		if (!is_resimulating())
 		{
 			update_input_role(any_mgr);
+			spectator_tick(any_mgr, std::chrono::steady_clock::now());
 		}
 		const u32 mgr = manager();
 

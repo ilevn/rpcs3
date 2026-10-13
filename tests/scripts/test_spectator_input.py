@@ -2,7 +2,8 @@
 """Exercise the production Tekken input hooks with synthetic guest memory.
 
 No game or firmware is needed. Tests cover both spectator input streams,
-missing inputs, ring wrap, lobby role changes, and fighter prediction.
+missing/reordered batches, ring wrap, lobby role changes, fighter prediction,
+and bounded spectator diagnostics (enabled and disabled).
 This does not replace a three-person RPCN lobby test.
 """
 
@@ -31,8 +32,12 @@ def main():
         prelude = prelude.replace(
             "return local == 1 ? 2 : local == 2 ? 1 : 0;",
             "return local == 1 ? 2 : 1;")
-    extracted = {"roles.inc": prelude}
+    extracted = {"roles.inc": prelude,
+                 "diagnostics.inc": section(source, "\t\t// Spectator diagnostics:", "\t\t// Predicted remote entry"),
+                 "rb_spectator_diagnostics.h": (tests.parents[1] / "rpcs3/Emu/Rollback/rb_spectator_diagnostics.h").read_text()}
     for name, signature in {
+        "hle_spectator_request": "\tu64 hle_spectator_request(ppu_thread& ppu, u64 transport, u64 peer, u64 message)",
+        "hle_spectator_receive": "\tu64 hle_spectator_receive(ppu_thread& ppu, u64 message)",
         "read_entry": "\t\tentry_t read_entry(u32 addr)",
         "slot_addr": "\t\tu32 slot_addr(u32 mgr, u32 i, u32 frame)",
         "flag_addr": "\t\tu32 flag_addr(u32 mgr, u32 i, u32 frame)",
@@ -52,6 +57,8 @@ def main():
                        check=True, timeout=60)
         env = {k: v for k, v in os.environ.items() if not k.startswith("RB_")}
         env.update(RB_ONLINE_PREDICT="1", RB_ONLINE_MAX_PREDICT="5")
+        subprocess.run([str(executable)], env=env, check=True, timeout=30)
+        env["RB_SPECTATOR_DIAGNOSTICS"] = "0"
         subprocess.run([str(executable)], env=env, check=True, timeout=30)
 
 

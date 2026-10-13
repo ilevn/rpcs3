@@ -161,5 +161,62 @@ not prove Tekken online synchronization. For game tests, start with matching
 Linux builds, play several full matches including rematches, retain both logs,
 and record any desync, missing audio, freeze, crash or failed relaunch.
 
+## Experimental spectator diagnostics
+
+On `fix/linux-spectator-sync`, spectator diagnostics are enabled by default with
+the normal rollback launcher. Update and rebuild that branch before collecting
+a new session. No settings change is needed on the Windows fighters just to
+collect the Linux spectator trace. This does not establish that arbitrary build
+versions are compatible.
+
+The existing `RPCS3.log` contains `Spectator` entries covering:
+
+- The next required frame for each fighter, its ready flags, the next 32 slot
+  flags, the game's shared ready gate, and the highest available counters.
+- Input-store ranges and counts of accepted, duplicate, rejected, backwards and
+  nonconsecutive offers, including stores that clear a present next-slot flag.
+- Actual spectator request attempts and type-9 responses: the last 32 ranges per
+  report, in observed order, with an explicit omitted count if that limit is hit.
+- Sampled request-pending, response-wait and input-wait state, plus role changes,
+  game modes, counter resets, stalls and resumed simulation progress.
+
+Summaries are emitted at most once every two seconds during a stable mode, plus
+mode/role/reset and recovery events. Memory use is bounded; input contents and
+peer identities are not recorded. Set `RB_SPECTATOR_DIAGNOSTICS=0` before launching
+to disable the extra logging and transport observers.
+
+Interpret the fields carefully: available counters are high-water marks, not
+proof of contiguous inputs. Slot bits can be stale after ring reuse; a set bit
+alone does not certify a frame. `cleared_next` can also count normal ring-slot
+reuse. `cleared_pending` narrows this to present slots between the simulated
+frame and the available counter, with `last_pending_clear` identifying the frame.
+Store ranges describe calls into the input manager, not packet boundaries.
+Request counts are send attempts, not delivery acknowledgments; response counts
+are observations after the game decompresses received type-9 messages, not
+proof decompression succeeded or their inputs were accepted. Sampled pending state can miss a request and response within one
+task iteration. Response counts of zero or one reset the game's request clock; zero carries no
+inputs. The request tag byte is recorded without inferring its meaning. No
+response tag is inferred.
+
+For another freeze, save the spectator's `RPCS3.log` (or `.log.gz`) before more
+launches rotate it, and ideally a fighter's log from the same match. Record the
+approximate time, exact builds and whether both fighters continued normally.
+Look for both `Spectator diagnostic call hook ... installed` messages at startup;
+an `unavailable` warning means request/response tracing is incomplete.
+
+Run the game-free regression with Python and a C++20 compiler:
+
+```sh
+python3 tests/scripts/test_spectator_input.py
+```
+
+This exercises diagnostics enabled/disabled, forwarding of transport arguments
+and return values, dropped/late/duplicate 17-frame batches, ring wrap and round
+resets. It reproduces a late batch clearing a newer input's ready flag while the
+available counter stays ahead. That is a characterization of a possible failure,
+not proof this ordering caused a real session's freeze. The test does not run
+the guest transport, validate live call-site dispatch, or prove online recovery.
+This diagnostic change leaves input acceptance and recovery behavior unchanged.
+
 RPCS3 retains its GPLv2 license. GGPO retains its MIT license. Preserve their
 copyright and license notices when redistributing source or future binaries.
