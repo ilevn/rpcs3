@@ -220,3 +220,10 @@ This diagnostic change leaves input acceptance and recovery behavior unchanged.
 
 RPCS3 retains its GPLv2 license. GGPO retains its MIT license. Preserve their
 copyright and license notices when redistributing source or future binaries.
+
+## Optional audio investigation captures
+
+For crackling or distorted move voices, see [the audio capture workflow](AUDIO_CAPTURE.md).
+The instrumented Linux/Cubeb build supports `scripts/play_audio_capture.sh boot`
+and Ctrl+Shift+F8 markers, with automatic early/later fight samples. Captures are
+bounded and opt-in; this instrumentation is not an audio fix.

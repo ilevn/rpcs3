@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "rb_audio_capture.h"
 #include "rb_state.h"
 
 #include "rb_input.h"
@@ -2758,6 +2759,12 @@ namespace rb
 
 	bool state_net_load(u64 game_frame, snapshot_info& out)
 	{
+		struct capture_load
+		{
+			u64 frame, start; bool success = false;
+			~capture_load() { audio_capture::send_event(audio_capture::restore_end, frame, start ? audio_capture::now_us() - start : 0, success); }
+		} capture{game_frame, audio_capture::enabled() ? audio_capture::now_us() : 0};
+		audio_capture::send_event(audio_capture::restore_begin, game_frame);
 		check_kernel_changes();
 
 		u32 slot = ring_size;
@@ -2794,6 +2801,7 @@ namespace rb
 		}
 
 		out = g_ring_info[slot];
+		capture.success = true;
 		return true;
 	}
 

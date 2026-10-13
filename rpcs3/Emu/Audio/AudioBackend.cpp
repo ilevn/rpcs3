@@ -1,11 +1,12 @@
 #include "stdafx.h"
 #include "AudioBackend.h"
+#include "Emu/Rollback/rb_audio_capture.h"
 #include "Emu/IdManager.h"
 #include "Emu//Cell/Modules/cellAudioOut.h"
 #include <cstring>
 #include <cmath>
 
-AudioBackend::AudioBackend() {}
+AudioBackend::AudioBackend() { rb::audio_capture::enabled(); }
 
 void AudioBackend::SetWriteCallback(std::function<u32(u32 /* byte_cnt */, void* /* buffer */)> cb)
 {

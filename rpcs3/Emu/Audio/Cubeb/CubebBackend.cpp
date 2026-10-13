@@ -1,4 +1,5 @@
 #include "Emu/Audio/Cubeb/CubebBackend.h"
+#include "Emu/Rollback/rb_audio_capture.h"
 
 #include <algorithm>
 #include <cstdarg>
@@ -365,6 +366,7 @@ long CubebBackend::data_cb(cubeb_stream* stream, void* user_ptr, void const* /* 
 	CubebBackend* const cubeb = static_cast<CubebBackend*>(user_ptr);
 	ensure(cubeb);
 
+	std::uint64_t captured_written = UINT64_MAX; // inactive/reset/lock miss, not a measured buffer underrun
 	std::unique_lock lock(cubeb->m_cb_mutex, std::defer_lock);
 
 	if (!cubeb->m_reset_req.observe() && lock.try_lock_for(std::chrono::microseconds{50}) && cubeb->m_write_callback && cubeb->m_playing)
@@ -379,6 +381,7 @@ long CubebBackend::data_cb(cubeb_stream* stream, void* user_ptr, void const* /* 
 		const u32 bytes_req = nframes * sample_size;
 		u32 written = std::min(cubeb->m_write_callback(bytes_req, output_buffer), bytes_req);
 		written -= written % sample_size;
+		captured_written = written;
 
 		if (written >= sample_size)
 		{
@@ -397,11 +400,14 @@ long CubebBackend::data_cb(cubeb_stream* stream, void* user_ptr, void const* /* 
 		memset(output_buffer, 0, nframes * cubeb->full_sample_size);
 	}
 
+	rb::audio_capture::audio(output_buffer, nframes * cubeb->full_sample_size,
+		cubeb->get_sampling_rate(), cubeb->get_channels(), cubeb->get_sample_size(), captured_written);
 	return nframes;
 }
 
 void CubebBackend::state_cb(cubeb_stream* stream, void* user_ptr, cubeb_state state)
 {
+	rb::audio_capture::send_event(rb::audio_capture::backend_state, static_cast<unsigned>(state));
 	if (!stream)
 	{
 		Cubeb.error("state_cb called with invalid stream");

@@ -1,4 +1,5 @@
 #include "gs_frame.h"
+#include "Emu/Rollback/rb_audio_capture.h"
 #include "gui_settings.h"
 
 #include "Utilities/Config.h"
@@ -47,6 +48,7 @@
 #endif
 #ifdef HAVE_X11
 #include <X11/Xlib.h>
+#undef KeyPress // Use QEvent::KeyPress below, not the X11 event macro.
 #endif
 #endif
 
@@ -1205,6 +1207,17 @@ void gs_frame::mouse_hide_timeout()
 
 bool gs_frame::event(QEvent* ev)
 {
+	if (ev->type() == QEvent::KeyPress && rb::audio_capture::enabled())
+	{
+		const auto* key = static_cast<QKeyEvent*>(ev);
+		if (key->key() == Qt::Key_F8 && key->modifiers() == (Qt::ControlModifier | Qt::ShiftModifier) && !key->isAutoRepeat())
+		{
+			const bool sent = rb::audio_capture::send_event(rb::audio_capture::marker);
+			rsx::overlays::queue_message(std::string(sent ? "Audio capture requested (10 seconds after marker)" : "Audio marker failed; check capture collector"));
+			return true;
+		}
+	}
+
 	if (ev->type() == QEvent::Close)
 	{
 		if (m_gui_settings->GetValue(gui::ib_confirm_exit).toBool())

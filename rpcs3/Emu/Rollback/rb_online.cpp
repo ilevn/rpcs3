@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "rb_input.h"
+#include "rb_audio_capture.h"
 #include "rb_state.h"
 #include "rb_checksum.h"
 #include "rb_spectator_diagnostics.h"
@@ -1552,6 +1553,7 @@ namespace rb::online
 	// until the peer disconnected).
 	void hle_voice_stop_wait(ppu_thread& ppu, u32 voice)
 	{
+		audio_capture::send_event(audio_capture::sound, 0, voice, 0, 5);
 		constexpr u64 toc = 0x0096A8B0;
 
 		if (vm::read32(voice + 0x20) != 1)
@@ -2298,6 +2300,7 @@ namespace rb::online
 		get_seq(seq);
 		seq[0] = sound_frame_no();
 		const bool resim = sound_resim();
+		audio_capture::send_event(audio_capture::sound, seq[0], bank, cue, resim ? 10 : 0);
 
 		if (resim && sound_dedup())
 		{
@@ -2334,6 +2337,7 @@ namespace rb::online
 				}
 
 				g_snd_claimed++;
+				audio_capture::send_event(audio_capture::sound, seq[0], bank, cue, 1);
 				return 0;
 			}
 
@@ -2343,6 +2347,7 @@ namespace rb::online
 			if (sound_simple())
 			{
 				g_snd_skipped++;
+				audio_capture::send_event(audio_capture::sound, seq[0], bank, cue, 2);
 				return 0;
 			}
 		}
@@ -2400,6 +2405,7 @@ namespace rb::online
 		ppu.gpr[1] = old_r1;
 		sound_learn_end();
 
+		audio_capture::send_event(audio_capture::sound, seq[0], bank, cue, ret == 0 ? 3 : 4);
 		if (ret == 0)
 		{
 			g_snd_ok++;
@@ -3302,6 +3308,7 @@ namespace rb::online
 	}
 
 	bool resimulating = false;
+	u64 g_audio_resim_start = 0;
 	u64 g_resim_until = 0; // game frame where the re-simulation reaches the frame of the rollback again
 
 	// Local controller pads (RB_ONLINE_PAD_KEEP, default the pad objects 2-8 0x00B06610-0x00B06F70 and their raw data
@@ -4461,6 +4468,7 @@ namespace rb::online
 			const auto now = std::chrono::steady_clock::now();
 			const u64 us = last.time_since_epoch().count() ? std::chrono::duration_cast<std::chrono::microseconds>(now - last).count() : 0;
 			last = now;
+			audio_capture::send_event(audio_capture::frame, us, g_rollbacks, g_resim_frames);
 
 			if (us && us < 1000000)
 			{
@@ -4832,6 +4840,8 @@ namespace rb::online
 				return;
 			}
 
+			audio_capture::send_event(audio_capture::resim_end, game_frame, g_audio_resim_start ? audio_capture::now_us() - g_audio_resim_start : 0);
+			g_audio_resim_start = 0;
 			resimulating = false;
 			state_net_set_resim(false);
 
@@ -5173,6 +5183,8 @@ namespace rb::online
 					// rollback: frame end, frame allocator swap, draw requests - a loop of task walks alone skipped those and
 					// broke the draw lists / shader references / allocator), without rendering (RB_FAST_RESIM) and with the
 					// recorded local pad input. on_frame only saves the boundaries until the current frame is reached.
+					g_audio_resim_start = audio_capture::enabled() ? audio_capture::now_us() : 0;
+					audio_capture::send_event(audio_capture::resim_begin, game_frame, target, game_frame - target);
 					resimulating = true;
 					g_resim_until = game_frame;
 					state_net_set_resim(true);
