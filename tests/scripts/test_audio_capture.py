@@ -42,6 +42,53 @@ class CaptureTests(unittest.TestCase):
                 events = [json.loads(l) for l in z.read('events.jsonl').splitlines()]
                 self.assertEqual(events[2]['sample_frame_offset'], 1)
 
+    def test_interleaved_streams_formats_and_missing_timing(self):
+        with tempfile.TemporaryDirectory() as t:
+            p = Path(t)/'capture.zip'
+            rows = [event(1, 100, 0, 48000, 2, 4, b'abcd'),
+                    event(10, 101, 1, 48000, 2, 8, b'12345678', sample_size=4),
+                    event(1, 102, 2, 48000, 2, 4, b'efgh'),
+                    event(10, 103, 3, 48000, 2, 8, b'ABCDEFGH', sample_size=4),
+                    event(10, 104, 4, 48000, 1, 4, b'ijkl', sample_size=4)]
+            # Both stream kinds must validate payloads in the wire decoder.
+            for r in rows:
+                packet = c.HEADER.pack(1, r['kind'], r['time_us'], r['seq'], r['a'], r['b'], r['c'], r['d']) + r['pcm']
+                self.assertEqual(c.decode(packet), r)
+            self.assertIsNone(c.decode(c.HEADER.pack(1, 10, 0, 0, 48000, 2, 4, 8) + b'x'))
+            c.write_bundle(p, rows, {})
+            with zipfile.ZipFile(p) as z:
+                self.assertEqual(z.read('game-output-00.wav')[44:], b'abcdefgh')
+                self.assertEqual(z.read('mixer-input-00.wav')[44:], b'12345678ABCDEFGH')
+                self.assertEqual(z.read('mixer-input-01.wav')[44:], b'ijkl')
+                records = [json.loads(l) for l in z.read('events.jsonl').splitlines()]
+                self.assertEqual([r['sample_frame_offset'] for r in records], [0, 0, 1, 1, 0])
+                meta = json.loads(z.read('capture.json'))
+                self.assertEqual(meta['audio_files'], 3)
+                self.assertIsNone(meta['summary']['max_restore_us'])
+                self.assertIsNone(meta['summary']['max_resim_us'])
+
+    @unittest.skipUnless(os.sys.platform == 'linux', 'Linux actual-mixer capture test')
+    def test_actual_mixer_before_stretch_and_silence(self):
+        with tempfile.TemporaryDirectory() as t:
+            t = Path(t)
+            source = (ROOT/'rpcs3/Emu/Cell/Modules/cellAudio.cpp').read_text()
+            body = source[source.index('void audio_ringbuffer::enqueue('):source.index('void audio_ringbuffer::enqueue_silence(')]
+            fixture = Path(__file__).with_name('audio_capture_mixer_fixture.cpp').read_text()
+            (t/'mixer.cpp').write_text(fixture.replace('// ENQUEUE_INSERT', body))
+            subprocess.run(['c++', '-std=c++20', '-I', str(ROOT/'rpcs3'), str(t/'mixer.cpp'), '-o', str(t/'mixer')], check=True)
+            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+                sock.bind(str(t/'socket')); sock.settimeout(2)
+                subprocess.run([str(t/'mixer')], env=dict(os.environ, T6_AUDIO_CAPTURE_SOCKET=str(t/'socket')), check=True, timeout=3)
+                rows = [c.decode(sock.recv(65536)) for _ in range(6)]
+            self.assertEqual([r['kind'] for r in rows], [11, 10, 11, 10, 11, 10])
+            self.assertEqual(rows[1]['pcm'], struct.pack('=512f', *([.25]*512)))
+            self.assertEqual(rows[3]['pcm'], bytes(2048))
+            self.assertEqual(rows[0]['a'], 960)
+            self.assertEqual(rows[2]['b'], 750000)
+            self.assertEqual(rows[2]['c'], 1 | 4 | 8)
+            self.assertEqual(rows[4]['a'], c.INACTIVE)
+            self.assertEqual(rows[4]['c'], 1 | 2 | 8)
+
     def test_pre_post_window_and_inactive_not_underrun(self):
         with tempfile.TemporaryDirectory() as t:
             obj = c.Collector(Path(t), before=.02, after=.01)

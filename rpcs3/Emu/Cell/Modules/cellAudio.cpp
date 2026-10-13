@@ -3,6 +3,7 @@
 #include "Emu/System.h"
 #include "Emu/system_config.h"
 #include "Emu/Audio/audio_utils.h"
+#include "Emu/Rollback/rb_audio_capture.h"
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/Cell/timers.hpp"
 #include "Emu/Cell/lv2/sys_process.h"
@@ -259,6 +260,19 @@ void audio_ringbuffer::enqueue(bool enqueue_silence, bool force)
 		return;
 	}
 
+	if (rb::audio_capture::enabled())
+	{
+		// Tap accepted mixer blocks before time stretching, downmix and conversion.
+		const u32 bytes = AUDIO_BUFFER_SAMPLES * cfg.audio_channels * sizeof(float);
+		rb::audio_capture::send_event(rb::audio_capture::mixer_state,
+			cfg.buffering_enabled ? get_enqueued_samples() : UINT64_MAX,
+			static_cast<u64>(frequency_ratio * 1'000'000),
+			(enqueue_silence ? 1u : 0u) | (force ? 2u : 0u) |
+			(cfg.buffering_enabled ? 4u : 0u) | (cfg.time_stretching_enabled ? 8u : 0u), AUDIO_BUFFER_SAMPLES);
+		rb::audio_capture::audio(buf, bytes, cfg.audio_sampling_rate, cfg.audio_channels,
+			sizeof(float), bytes, rb::audio_capture::mixer_pcm);
+	}
+
 	// Enqueue audio
 	if (cfg.time_stretching_enabled)
 	{
@@ -310,7 +324,13 @@ void audio_ringbuffer::commit_data(f32* buf, u32 sample_cnt)
 		AudioBackend::convert_to_s16(sample_cnt_out, buf, buf);
 	}
 
-	cb_ringbuf.push(buf, sample_cnt_out * cfg.audio_sample_size);
+	const u64 requested = sample_cnt_out * cfg.audio_sample_size;
+	const u64 written = cb_ringbuf.push(buf, requested);
+	if (rb::audio_capture::enabled())
+	{
+		rb::audio_capture::send_event(rb::audio_capture::ring_write, requested, written,
+			cfg.audio_sample_size * cfg.backend_ch_cnt, cb_ringbuf.get_used_size());
+	}
 }
 
 void audio_ringbuffer::play()
@@ -1105,6 +1125,7 @@ void cell_audio_thread::operator()()
 			if (active_ports == 0)
 			{
 				// no need to mix, just enqueue silence and advance time
+				rb::audio_capture::send_event(rb::audio_capture::mixer_decision, 1, active_ports, untouched, time_since_last_period);
 				cellAudio.trace("enqueuing silence: no active ports, enqueued_buffers=%llu", enqueued_buffers);
 				ringbuffer->enqueue_silence();
 				untouched_expected = 0;
@@ -1130,6 +1151,7 @@ void cell_audio_thread::operator()()
 					if (untouched >= active_ports)
 					{
 						// There's no audio in any buffer, simply advance time and hope the game recovers
+						rb::audio_capture::send_event(rb::audio_capture::mixer_decision, 2, active_ports, untouched, time_since_last_period);
 						cellAudio.trace("advancing time: untouched=%u/%u (expected=%u), enqueued_buffers=%llu", untouched, active_ports, untouched_expected, enqueued_buffers);
 						advance(timestamp);
 						continue;
@@ -1139,6 +1161,7 @@ void cell_audio_thread::operator()()
 					// away as well, one block at a time, for as long as a port keeps alternating between
 					// touched and untouched. Mix what is there instead: the untouched ports were memset, so
 					// they contribute silence, which is exactly what they hold.
+					rb::audio_capture::send_event(rb::audio_capture::mixer_decision, 3, active_ports, untouched, time_since_last_period);
 					cellAudio.trace("mixing partially untouched buffers: untouched=%u/%u, enqueued_buffers=%llu", untouched, active_ports, enqueued_buffers);
 					waited_long_enough = true;
 				}
@@ -1155,6 +1178,7 @@ void cell_audio_thread::operator()()
 			if (untouched == active_ports)
 			{
 				// There's no audio in the buffers, simply advance time
+				rb::audio_capture::send_event(rb::audio_capture::mixer_decision, 4, active_ports, untouched, time_since_last_period);
 				cellAudio.trace("enqueuing silence: untouched=%u/%u (expected=%u), enqueued_buffers=%llu", untouched, active_ports, untouched_expected, enqueued_buffers);
 				ringbuffer->enqueue_silence();
 				expect_untouched(untouched);

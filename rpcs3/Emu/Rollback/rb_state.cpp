@@ -224,6 +224,7 @@ namespace rb
 		u64 g_rollbacks = 0;
 		u64 g_save_us_total = 0, g_save_us_max = 0, g_saves = 0;
 		std::chrono::steady_clock::time_point g_resim_start{};
+		u64 g_capture_ring_start = 0;
 
 		// Netplay (RB_NET=1): GGPO decides when to save and load; the snapshot module only provides the ring
 		bool g_net_mode = false;
@@ -3098,6 +3099,9 @@ namespace rb
 					hold_release_locked();
 				}
 
+				audio_capture::send_event(audio_capture::resim_end, game_frame,
+					g_capture_ring_start ? audio_capture::now_us() - g_capture_ring_start : 0, 0, 1);
+				g_capture_ring_start = 0;
 				rollback_csv(fmt::format("E,%u", us));
 				g_resim_start = {};
 				native::sample_gate(false);
@@ -3201,6 +3205,11 @@ namespace rb
 				}
 				else if (to_slot != ring_size && to < game_frame)
 				{
+					// Include input preservation and draw waits, not only the memory copy.
+					const u64 capture_start = audio_capture::enabled() ? audio_capture::now_us() : 0;
+					g_capture_ring_start = capture_start;
+					audio_capture::send_event(audio_capture::resim_begin, game_frame, to, game_frame - to, 1);
+					audio_capture::send_event(audio_capture::restore_begin, to, 0, 0, 1);
 					if (g_request_before)
 					{
 						g_request_before();
@@ -3260,6 +3269,9 @@ namespace rb
 						g_request_after();
 					}
 
+					audio_capture::send_event(audio_capture::restore_end, to,
+						capture_start ? audio_capture::now_us() - capture_start : 0, 1, 1);
+
 					rollback_csv(fmt::format("R,%u,%u,%u", g_rollbacks, game_frame, to));
 
 					if (g_rollbacks % 100 == 1)
@@ -3272,6 +3284,8 @@ namespace rb
 					return true;
 				}
 
+				audio_capture::send_event(audio_capture::rollback_rejected, to, game_frame,
+					to_slot == ring_size ? 1 : to >= game_frame ? 3 : 2, 1);
 				if (g_request_failed++ < 50)
 				{
 					if (to_slot < ring_size)
@@ -3311,6 +3325,10 @@ namespace rb
 			}
 			else if (due)
 			{
+				const u64 capture_start = audio_capture::enabled() ? audio_capture::now_us() : 0;
+				g_capture_ring_start = capture_start;
+				audio_capture::send_event(audio_capture::resim_begin, game_frame, from, game_frame - from, 1);
+				audio_capture::send_event(audio_capture::restore_begin, from, 0, 0, 1);
 				const auto wait_start = std::chrono::steady_clock::now();
 				wait_for_draw_idle();
 				wait_for_flip();
@@ -3330,6 +3348,8 @@ namespace rb
 				film_undo_after_load(from);
 				online::sound_runtime_after_load();
 				online::stress_sound_after_load(from);
+				audio_capture::send_event(audio_capture::restore_end, from,
+					capture_start ? audio_capture::now_us() - capture_start : 0, 1, 1);
 				const u64 us = elapsed_us(start);
 
 				g_load_us_total += us;

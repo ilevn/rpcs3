@@ -20,7 +20,10 @@ import zipfile
 
 HEADER = struct.Struct('=II6Q')
 NAMES = {1: 'audio', 2: 'marker', 3: 'fight_frame', 4: 'restore_begin',
-         5: 'restore_end', 6: 'resim_end', 7: 'sound', 8: 'backend_state', 9: 'resim_begin'}
+         5: 'restore_end', 6: 'resim_end', 7: 'sound', 8: 'backend_state', 9: 'resim_begin',
+         10: 'mixer_audio', 11: 'mixer_state', 12: 'mixer_decision',
+         13: 'rollback_rejected', 14: 'ring_write'}
+PCM_STREAMS = {1: 'game-output', 10: 'mixer-input'}
 INACTIVE = (1 << 64) - 1
 MAX_MEMORY = 64 * 1024 * 1024
 MAX_CAPTURES = 8
@@ -35,7 +38,7 @@ def decode(data):
     if version != 1 or kind not in NAMES:
         return None
     payload = data[HEADER.size:]
-    if kind == 1:
+    if kind in PCM_STREAMS:
         if not (8000 <= a <= 192000 and 1 <= b <= 8 and c in (2, 4)):
             return None
         if not payload or len(payload) % (b * c) or (d != INACTIVE and d > len(payload)):
@@ -54,29 +57,37 @@ def wave_header(size, rate, channels, sample_size):
 def write_bundle(path, records, metadata):
     records = sorted(records, key=lambda r: (r['time_us'], r['seq']))
     groups = []
-    for r in records:
-        if r['kind'] == 1:
+    for stream, prefix in PCM_STREAMS.items():
+        stream_groups = []
+        for r in records:
+            if r['kind'] != stream:
+                continue
             fmt = (r['a'], r['b'], r['c'])
-            if not groups or groups[-1][0] != fmt:
-                groups.append((fmt, []))
-            groups[-1][1].append(r)
+            if not stream_groups or stream_groups[-1][0] != fmt:
+                stream_groups.append((fmt, []))
+            stream_groups[-1][1].append(r)
+        groups.extend((f'{prefix}-{index:02}.wav', fmt, blocks)
+                      for index, (fmt, blocks) in enumerate(stream_groups))
+    fight = [r for r in records if r['kind'] == 3]
     sequences = {r['seq'] for r in records if r['seq'] >= 0}
     metadata = dict(metadata, summary={
         'audio_shortfall_chunks': sum(r['kind'] == 1 and r['d'] != INACTIVE and r['d'] < len(r['pcm']) for r in records),
         'inactive_or_unavailable_chunks': sum(r['kind'] == 1 and r['d'] == INACTIVE for r in records),
         'max_live_frame_us': max((r['a'] for r in records if r['kind'] == 3), default=0),
         'successful_restores': sum(r['kind'] == 5 and bool(r['c']) for r in records),
-        'max_restore_us': max((r['b'] for r in records if r['kind'] == 5), default=0),
-        'max_resim_us': max((r['b'] for r in records if r['kind'] == 6), default=0)},
-        schema=1, clock='CLOCK_MONOTONIC microseconds',
+        'max_restore_us': max((r['b'] for r in records if r['kind'] == 5), default=None),
+        'max_resim_us': max((r['b'] for r in records if r['kind'] == 6 and r['b']), default=None),
+        'observed_rollback_counter_increase': sum(max(0, y['b'] - x['b']) for x, y in zip(fight, fight[1:])),
+        'mixer_explicit_silence_blocks': sum(r['kind'] == 11 and bool(r['c'] & 1) for r in records),
+        'ring_rejected_bytes': sum(max(0, r['a'] - r['b']) for r in records if r['kind'] == 14)},
+        schema=2, clock='CLOCK_MONOTONIC microseconds',
                     missing_transport_sequences=(max(sequences) - min(sequences) + 1 - len(sequences)) if sequences else 0,
                     audio_files=len(groups), records=len(records),
-                    limitation='Audio is RPCS3 Cubeb output before the OS/device; callback timestamps are not speaker presentation times. Missing chunks are not silently reconstructed. WAV samples are concatenated; events map each chunk to its timestamp and WAV offset.')
+                    limitation='Audio taps are cellAudio mixer input to time stretching and Cubeb output before the OS/device; clocks mark production, not speaker presentation. Streams can differ in channel count, duration and latency; do not compare by WAV offset alone. Missing timing events mean unmeasured, not zero rollback cost. Missing chunks are not silently reconstructed. WAV samples are concatenated; events map each chunk to its timestamp and WAV offset.')
     offsets = {}
     temporary = path.with_suffix('.partial')
     with zipfile.ZipFile(temporary, 'x', compression=zipfile.ZIP_STORED) as z:
-        for index, (fmt, blocks) in enumerate(groups):
-            name = f'game-output-{index:02}.wav'
+        for name, fmt, blocks in groups:
             size = sum(len(r['pcm']) for r in blocks)
             offset = 0
             with z.open(name, 'w') as f:
@@ -226,7 +237,7 @@ def run(args):
     binary = Path(env.get('RPCS3_EXE', '/nonexistent'))
     provenance = {'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest() if binary.is_file() else None,
                   'started_utc': stamp, 'clock_origin_us': now_us(),
-                  'capture_scope': 'RPCS3 Cubeb output only, before OS/device'}
+                  'capture_scope': 'RPCS3 cellAudio mixer and Cubeb output, before OS/device'}
     collector.context = provenance
     (output / 'session.json').write_text(json.dumps(provenance, indent=2) + '\n')
     child = None
@@ -240,7 +251,7 @@ def run(args):
     try:
         child = subprocess.Popen(command, env=env)
         print(f'Audio capture armed: {output}\nPress Ctrl+Shift+F8 in the game window to mark a glitch.', flush=True)
-        print('Only RPCS3 Cubeb output is captured; no microphone or voice chat.', flush=True)
+        print('Only RPCS3 game audio is captured; no microphone or other applications.', flush=True)
         while not stopped:
             for key, mask in selector.select(timeout=0.1):
                 # Bound work per iteration even if an event storm occurs.

@@ -18,7 +18,7 @@ namespace rb::audio_capture
 enum kind : std::uint32_t
 {
 	pcm = 1, marker, frame, restore_begin, restore_end, resim_end, sound,
-	backend_state, resim_begin
+	backend_state, resim_begin, mixer_pcm, mixer_state, mixer_decision, rollback_rejected, ring_write
 };
 
 #ifdef __linux__
@@ -64,7 +64,7 @@ inline bool send_event(kind type, std::uint64_t a = 0, std::uint64_t b = 0,
 	return sendmsg(socket.fd, &message, MSG_DONTWAIT | MSG_NOSIGNAL) == static_cast<ssize_t>(sizeof(header) + size);
 }
 inline void audio(const void* data, std::uint32_t bytes, std::uint32_t rate,
-	std::uint32_t channels, std::uint32_t sample_size, std::uint64_t written)
+	std::uint32_t channels, std::uint32_t sample_size, std::uint64_t written, kind stream = pcm)
 {
 	if (!enabled() || !channels || !sample_size) return;
 	const std::uint32_t stride = channels * sample_size;
@@ -75,7 +75,7 @@ inline void audio(const void* data, std::uint32_t bytes, std::uint32_t rate,
 		const std::uint32_t count = bytes - offset < limit ? bytes - offset : limit;
 		const auto available = written == UINT64_MAX ? written :
 			written <= offset ? 0 : written - offset < count ? written - offset : count;
-		send_event(pcm, rate, channels, sample_size, available, static_cast<const char*>(data) + offset, count);
+		send_event(stream, rate, channels, sample_size, available, static_cast<const char*>(data) + offset, count);
 		offset += count;
 	}
 }
@@ -83,6 +83,6 @@ inline void audio(const void* data, std::uint32_t bytes, std::uint32_t rate,
 inline bool enabled() { return false; }
 inline std::uint64_t now_us() { return 0; }
 inline bool send_event(kind, std::uint64_t = 0, std::uint64_t = 0, std::uint64_t = 0, std::uint64_t = 0) { return false; }
-inline void audio(const void*, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t, std::uint64_t) {}
+inline void audio(const void*, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t, std::uint64_t, kind = pcm) {}
 #endif
 }
